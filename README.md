@@ -1,4 +1,4 @@
-# Doom Sprite Maker
+# Vi Spritesheet Tool
 
 A simple utility for converting folders of rendered sprites into texture atlases suitable for Doom-style, boomer-shooter, and billboard sprite workflows.
 
