@@ -1,16 +1,22 @@
 # Vi Spritesheet Tool
 
-A simple utility for converting folders of rendered sprites into texture atlases suitable for Doom-style, boomer-shooter, and billboard sprite workflows.
+A utility for converting folders of rendered sprites into texture atlases for Doom-style, boomer-shooter, billboard, and 2.5D sprite workflows.
 
 ## Features
 
 * Combines image sequences into texture atlases
-* Supports multiple input folders
+* Supports multiple input folders in a single build
+* Custom output names per atlas
+* Automatic animation detection from filenames
 * Optional image resizing
 * Chroma key background removal
 * Green edge despill
 * Alpha cleanup and thresholding
 * Automatic sprite grounding
+* Per-frame grounding exclusions
+* Import animation ordering from CSV
+* Export animation ordering to CSV
+* Export animation index maps to TXT
 * Configurable atlas and cell sizes
 * PNG output with transparency
 
@@ -45,15 +51,45 @@ Render your character or object as a sequence of PNG images.
 
 Example:
 
-```
-Goblin_Idle/
-    0001.png
-    0002.png
-    0003.png
-    ...
+```text
+Goblin_Run/
+    Run000.png
+    Run001.png
+    Run002.png
+
+Goblin_Attack/
+    Attack000.png
+    Attack001.png
+    Attack002.png
 ```
 
 Each folder becomes one atlas.
+
+Animation names are automatically determined from filename prefixes.
+
+Examples:
+
+```text
+Idle000.png
+Idle001.png
+Idle002.png
+
+Run000.png
+Run001.png
+Run002.png
+
+Attack000.png
+Attack001.png
+Attack002.png
+```
+
+Produces three animation groups:
+
+```text
+Idle
+Run
+Attack
+```
 
 ---
 
@@ -61,13 +97,29 @@ Each folder becomes one atlas.
 
 Click:
 
-```
+```text
 Add Input Folder
 ```
 
 Select one or more sprite folders.
 
-Each folder will generate its own atlas.
+Each folder generates its own atlas.
+
+You can optionally assign a custom output name to each atlas.
+
+Example:
+
+```text
+Goblin_Combat.png
+Goblin_Civilian.png
+Goblin_Armored.png
+```
+
+instead of:
+
+```text
+Goblin_Run_atlas.png
+```
 
 ---
 
@@ -75,7 +127,7 @@ Each folder will generate its own atlas.
 
 Click:
 
-```
+```text
 Choose Output Folder
 ```
 
@@ -133,14 +185,14 @@ Best for:
 
 * Pixel art
 * Retro sprites
-* Sharp edges
+* Crisp edges
 
 ##### Lanczos
 
 Best for:
 
-* High resolution renders
-* Smooth scaling
+* High-resolution renders
+* Smooth downscaling
 
 ##### Bicubic / Bilinear
 
@@ -148,17 +200,94 @@ General-purpose alternatives.
 
 ---
 
+## Animation Ordering
+
+The tool can automatically organize animation groups and export their ordering information.
+
+### Export Animation Order as CSV
+
+Creates a CSV containing each unique animation name in the order used by the atlas.
+
+Example:
+
+```text
+Idle
+Run
+Attack
+Death
+```
+
+Useful for:
+
+* Reusing animation order across characters
+* Maintaining consistent atlas layouts
+* Standardizing large sprite libraries
+
+---
+
+### Import Animation Order CSV
+
+Imports a previously exported animation order file.
+
+Animations matching the CSV order are placed first.
+
+Any animations not present in the CSV are appended afterward.
+
+This allows multiple characters to share identical atlas layouts.
+
+---
+
+### Export Animation Index Map (.txt)
+
+When CSV export is enabled, the tool also creates a companion TXT file describing where each animation exists inside the final atlas frame array.
+
+Example:
+
+```text
+Idle
+0
+1
+2
+3
+
+Run
+4
+5
+6
+7
+8
+
+Attack
+9
+10
+11
+12
+```
+
+This is useful when:
+
+* Building runtime animation lookup tables
+* Creating import scripts
+* Generating engine-side animation metadata
+* Mapping atlas frame indexes back to animation groups
+
+The TXT file contains only atlas frame indexes and animation names.
+
+Original sprite filenames are omitted.
+
+---
+
 ## Chroma Key Removal
 
 Enable:
 
-```
+```text
 Remove Background Color
 ```
 
 The tool removes a specified color from the image and converts it to transparency.
 
-Default values are tuned for Blender's common green-screen workflow.
+Default values are tuned for Blender green-screen rendering.
 
 ### Recommended Settings
 
@@ -176,7 +305,11 @@ Default values are tuned for Blender's common green-screen workflow.
 
 Reduces green fringing around sprite edges after chroma removal.
 
-Recommended: Enabled
+Recommended:
+
+```text
+Enabled
+```
 
 ---
 
@@ -184,7 +317,7 @@ Recommended: Enabled
 
 Converts semi-transparent edge pixels into cleaner transparency values.
 
-Useful when rendering anti-aliased sprites.
+Useful for anti-aliased renders and chroma-key workflows.
 
 ### Recommended Values
 
@@ -205,48 +338,109 @@ Sprite grounding aligns the lowest visible pixel of each sprite to the bottom of
 
 This helps maintain consistent foot placement between animation frames.
 
-Unlike cropping-based solutions, grounding does not alter sprite dimensions or scaling.
+Unlike cropping-based workflows, grounding does not alter image dimensions or scaling.
 
-Only the vertical placement inside the cell is adjusted.
+Only vertical placement is adjusted.
+
+---
 
 ### Bottom Padding
 
-Controls how many pixels of space remain beneath the sprite.
+Controls the gap beneath grounded sprites.
 
 Default:
 
-```
+```text
 1
 ```
 
 ---
 
+### Skip Grounding On Selected Frames
+
+Certain frames may require custom positioning.
+
+Enable:
+
+```text
+Skip grounding on listed frames
+```
+
+Then provide frame numbers:
+
+```text
+0, 5, 12-16
+```
+
+Supported formats:
+
+```text
+0
+5
+8-12
+0,5,8-12
+```
+
+These frames retain normal centered placement.
+
+---
+
 ## Output
 
-Each input folder produces one atlas:
+Each input folder produces:
+
+### Atlas PNG
 
 Example:
 
-```
-Goblin_Idle_atlas.png
-Goblin_Run_atlas.png
-Goblin_Attack_atlas.png
+```text
+Goblin_Combat.png
 ```
 
-The atlas is arranged left-to-right, top-to-bottom.
+---
+
+### Animation Order CSV (Optional)
+
+Example:
+
+```text
+Goblin_Combat_animation_order.csv
+```
+
+---
+
+### Animation Index TXT (Optional)
+
+Example:
+
+```text
+Goblin_Combat_animation_index.txt
+```
+
+---
+
+The atlas is arranged:
+
+```text
+Left → Right
+Top → Bottom
+```
+
+Frame indexes correspond directly to atlas placement order.
 
 ---
 
 ## Recommended Blender Workflow
 
-1. Render character against green background.
+1. Render character against a green background.
 2. Export PNG sequence.
-3. Import sequence folder into Doom Sprite Maker.
+3. Import sequence folder into Vi Spritesheet Tool.
 4. Enable background removal.
 5. Enable despill.
 6. Enable grounding.
-7. Build atlas.
-8. Import atlas into Unreal Engine, Godot, or your preferred engine.
+7. Export animation metadata if desired.
+8. Build atlas.
+9. Import atlas into Unreal Engine, Godot, Unity, or your preferred engine.
 
 ---
 
@@ -256,6 +450,7 @@ The atlas is arranged left-to-right, top-to-bottom.
 * Atlas size must be divisible by cell size.
 * Extremely large sprite counts may require larger atlas dimensions.
 * Animated sprites must fit within the selected cell size.
+* Imported CSV animation names must match detected animation prefixes.
 
 ---
 
