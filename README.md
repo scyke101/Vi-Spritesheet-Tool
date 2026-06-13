@@ -428,22 +428,6 @@ Top → Bottom
 
 Frame indexes correspond directly to atlas placement order.
 
----
-
-## Recommended Blender Workflow
-
-1. Render character against a green background.
-2. Export PNG sequence.
-3. Import sequence folder into Vi Spritesheet Tool.
-4. Enable background removal.
-5. Enable despill.
-6. Enable grounding.
-7. Export animation metadata if desired.
-8. Build atlas.
-9. Import atlas into Unreal Engine, Godot, Unity, or your preferred engine.
-
----
-
 ## Known Limitations
 
 * Atlas generation is limited by available texture space.
