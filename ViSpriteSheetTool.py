@@ -50,8 +50,48 @@ def frame_sort_key(path):
     return (base_name.lower(), frame_rank, frame_value, path.name.lower())
 
 
+# Find a shared animation prefix ending on a useful separator.
+def detect_animation_prefix(animation_names):
+    if len(animation_names) < 2:
+        return ""
+
+    common = animation_names[0]
+
+    for name in animation_names[1:]:
+        while common and not name.startswith(common):
+            common = common[:-1]
+
+        if not common:
+            return ""
+
+    # Only strip prefixes that end at a readable naming boundary.
+    boundary_index = max(
+        common.rfind("_"),
+        common.rfind("-"),
+        common.rfind(" ")
+    )
+
+    if boundary_index == -1:
+        return ""
+
+    return common[:boundary_index + 1]
+
+
+# Remove the detected shared prefix from an animation name.
+def strip_animation_prefix(animation_name, prefix):
+    if prefix and animation_name.startswith(prefix):
+        return animation_name[len(prefix):]
+
+    return animation_name
+
+
+# Clean frame-number separators from names written to or read from CSV.
+def normalize_animation_csv_name(animation_name):
+    return animation_name.strip().rstrip("_- ")
+
+
 # Collect unique animation names in their current image order.
-def get_animation_order_from_images(images):
+def get_animation_order_from_images(images, strip_shared_prefix=False):
     order = []
     seen = set()
 
@@ -62,6 +102,11 @@ def get_animation_order_from_images(images):
         if key not in seen:
             seen.add(key)
             order.append(base_name)
+
+    if strip_shared_prefix:
+        prefix = detect_animation_prefix(order)
+        order = [strip_animation_prefix(name, prefix) for name in order]
+        order = [normalize_animation_csv_name(name) for name in order]
 
     return order
 
@@ -78,7 +123,7 @@ def read_animation_order_csv(csv_path):
             if not row:
                 continue
 
-            value = row[0].strip()
+            value = normalize_animation_csv_name(row[0])
 
             if not value:
                 continue
@@ -125,19 +170,55 @@ def write_animation_index_txt(txt_path, images):
 # Reorder image groups to follow an imported animation order CSV.
 def order_images_by_animation_csv(images, imported_order):
     groups = {}
+    display_names = {}
+    animation_names = []
+    seen_names = set()
 
     for img_path in images:
         base_name, _ = split_animation_name(img_path)
         key = base_name.lower()
         groups.setdefault(key, []).append(img_path)
+        display_names[key] = base_name
+
+        if key not in seen_names:
+            seen_names.add(key)
+            animation_names.append(base_name)
+
+    detected_prefix = detect_animation_prefix(animation_names)
+    stripped_key_lookup = {}
+
+    for key, base_name in display_names.items():
+        stripped_name = strip_animation_prefix(base_name, detected_prefix)
+        stripped_key_lookup.setdefault(stripped_name.lower(), key)
+        stripped_key_lookup.setdefault(normalize_animation_csv_name(stripped_name).lower(), key)
+        stripped_key_lookup.setdefault(normalize_animation_csv_name(base_name).lower(), key)
+
+        # Also support suffix matching so CSV entries like
+        # 'RAttack' match 'Saber_1H_RAttack' or 'Wood_1H_RAttack'.
+        parts = re.split(r"[_\- ]+", normalize_animation_csv_name(base_name))
+        for i in range(len(parts)):
+            suffix = "_".join(parts[i:]).strip().lower()
+            if suffix:
+                stripped_key_lookup.setdefault(suffix, key)
 
     ordered_images = []
     used_keys = set()
 
     for animation_name in imported_order:
-        key = animation_name.lower()
+        imported_key = animation_name.lower()
+        normalized_imported_key = normalize_animation_csv_name(animation_name).lower()
+
+        # Support both new prefix-free CSVs and older full-name CSVs.
+        key = imported_key
 
         if key not in groups:
+            key = stripped_key_lookup.get(imported_key)
+
+        if key not in groups:
+            key = stripped_key_lookup.get(normalized_imported_key)
+
+        if not key or key not in groups:
+            print(f"CSV animation not matched: {animation_name}")
             continue
 
         ordered_images.extend(sorted(groups[key], key=frame_sort_key))
@@ -836,7 +917,7 @@ class ViSheetMaker:
 
             # Export the unique animation order and frame index map used by this atlas.
             if self.export_animation_order_csv.get():
-                animation_order = get_animation_order_from_images(images)
+                animation_order = get_animation_order_from_images(images, strip_shared_prefix=True)
                 csv_output_path = self.output_folder / f"{output_name}_animation_order.csv"
                 txt_output_path = self.output_folder / f"{output_name}_animation_indexes.txt"
 
