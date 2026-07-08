@@ -8,7 +8,7 @@ from PIL import Image
 
 # Supported image file types for atlas input.
 VALID_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-# Matches filenames ending in frame numbers, such as walk001.
+# Legacy regex retained only for compatibility; filename parsing is underscore-token based.
 TRAILING_NUMBER_RE = re.compile(r"^(.*?)(\d+)$")
 
 
@@ -21,17 +21,29 @@ def clamp_alpha(alpha, alpha_floor, alpha_ceiling):
     return alpha
 
 
-# Split a filename into its animation name and optional trailing frame number.
+# Split a filename into its animation name and optional numeric frame number.
+#
+# This is intentionally underscore-token based. A frame number may appear
+# anywhere in the filename as long as that token is purely numeric:
+#
+#   Human_1H_Block_3      -> Human_1H_Block, 3
+#   3_Human_1H_Block      -> Human_1H_Block, 3
+#   Human_3_1H_Block_n    -> Human_1H_Block_n, 3
+#
+# Tokens such as 1H are preserved because they are not purely numeric.
 def split_animation_name(path):
-    stem = path.stem
-    match = TRAILING_NUMBER_RE.match(stem)
+    tokens = [token for token in path.stem.split("_") if token]
 
-    if match:
-        base_name = match.group(1)
-        frame_number = int(match.group(2))
-    else:
-        base_name = stem
-        frame_number = None
+    frame_number = None
+    name_tokens = []
+
+    for token in tokens:
+        if token.isdigit():
+            frame_number = int(token)
+        else:
+            name_tokens.append(token)
+
+    base_name = "_".join(name_tokens)
 
     return base_name, frame_number
 
@@ -50,39 +62,68 @@ def frame_sort_key(path):
     return (base_name.lower(), frame_rank, frame_value, path.name.lower())
 
 
-# Find a shared animation prefix ending on a useful separator.
-def detect_animation_prefix(animation_names):
-    if len(animation_names) < 2:
-        return ""
-
-    common = animation_names[0]
-
-    for name in animation_names[1:]:
-        while common and not name.startswith(common):
-            common = common[:-1]
-
-        if not common:
-            return ""
-
-    # Only strip prefixes that end at a readable naming boundary.
-    boundary_index = max(
-        common.rfind("_"),
-        common.rfind("-"),
-        common.rfind(" ")
-    )
-
-    if boundary_index == -1:
-        return ""
-
-    return common[:boundary_index + 1]
+# Split a normalized animation name into meaningful underscore-separated tokens.
+def split_animation_tokens(animation_name):
+    animation_name = normalize_animation_csv_name(animation_name)
+    return [token for token in animation_name.split("_") if token]
 
 
-# Remove the detected shared prefix from an animation name.
-def strip_animation_prefix(animation_name, prefix):
-    if prefix and animation_name.startswith(prefix):
-        return animation_name[len(prefix):]
+# Build reduced animation names by preserving only tokens that identify
+# a unique animation after splitting names on underscores.
+#
+# Important detail: names with the same token set are treated as the same
+# animation before token frequency is counted. This lets both of these reduce
+# to LAttack instead of destroying the only useful token:
+#
+#   Human_1H_LAttack
+#   1H_LAttack_Human
+#
+# Purely numeric frame tokens are already removed by split_animation_name.
+def build_unique_token_name_map(animation_names):
+    tokenized_names = {}
+    unique_token_sets = []
+    seen_token_sets = set()
 
-    return animation_name
+    for animation_name in animation_names:
+        normalized_name = normalize_animation_csv_name(animation_name)
+        tokens = split_animation_tokens(normalized_name)
+        tokenized_names[normalized_name] = tokens
+
+        token_set_key = tuple(sorted(set(token.lower() for token in tokens)))
+
+        if token_set_key not in seen_token_sets:
+            seen_token_sets.add(token_set_key)
+            unique_token_sets.append(set(token.lower() for token in tokens))
+
+    token_counts = {}
+
+    for token_set in unique_token_sets:
+        for token in token_set:
+            token_counts[token] = token_counts.get(token, 0) + 1
+
+    name_map = {}
+
+    for animation_name in animation_names:
+        normalized_name = normalize_animation_csv_name(animation_name)
+        tokens = tokenized_names.get(normalized_name, [])
+        kept_tokens = [
+            token
+            for token in tokens
+            if token_counts.get(token.lower(), 0) == 1
+        ]
+
+        if kept_tokens:
+            name_map[normalized_name] = "_".join(kept_tokens)
+        else:
+            name_map[normalized_name] = normalized_name
+
+    return name_map
+
+
+# Reduce one animation name using a prebuilt unique-token map.
+def reduce_animation_name(animation_name, unique_name_map):
+    normalized_name = normalize_animation_csv_name(animation_name)
+    return unique_name_map.get(normalized_name, normalized_name)
 
 
 # Clean frame-number separators from names written to or read from CSV.
@@ -92,21 +133,34 @@ def normalize_animation_csv_name(animation_name):
 
 # Collect unique animation names in their current image order.
 def get_animation_order_from_images(images, strip_shared_prefix=False):
-    order = []
-    seen = set()
+    raw_order = []
+    seen_raw = set()
 
     for img_path in images:
         base_name, _ = split_animation_name(img_path)
+        base_name = normalize_animation_csv_name(base_name)
         key = base_name.lower()
 
-        if key not in seen:
-            seen.add(key)
-            order.append(base_name)
+        if key not in seen_raw:
+            seen_raw.add(key)
+            raw_order.append(base_name)
 
     if strip_shared_prefix:
-        prefix = detect_animation_prefix(order)
-        order = [strip_animation_prefix(name, prefix) for name in order]
-        order = [normalize_animation_csv_name(name) for name in order]
+        unique_name_map = build_unique_token_name_map(raw_order)
+        candidate_order = [reduce_animation_name(name, unique_name_map) for name in raw_order]
+    else:
+        candidate_order = raw_order
+
+    order = []
+    seen = set()
+
+    for animation_name in candidate_order:
+        animation_name = normalize_animation_csv_name(animation_name)
+        key = animation_name.lower()
+
+        if animation_name and key not in seen:
+            seen.add(key)
+            order.append(animation_name)
 
     return order
 
@@ -149,79 +203,136 @@ def write_animation_order_csv(csv_path, animation_order):
             writer.writerow([animation_name])
 
 
+# Choose display names for atlas index output.
+def build_animation_display_name_map(images, imported_order=None):
+    display_name_map = {}
+    raw_order = []
+    seen_raw = set()
+
+    for img_path in images:
+        base_name, _ = split_animation_name(img_path)
+        base_name = normalize_animation_csv_name(base_name)
+        key = base_name.lower()
+
+        if key not in seen_raw:
+            seen_raw.add(key)
+            raw_order.append(base_name)
+
+    if imported_order is not None:
+        for base_name in raw_order:
+            matched_animation = find_matching_import_animation(base_name, imported_order)
+            display_name_map[base_name.lower()] = matched_animation if matched_animation else base_name
+        return display_name_map
+
+    unique_name_map = build_unique_token_name_map(raw_order)
+
+    for base_name in raw_order:
+        display_name_map[base_name.lower()] = reduce_animation_name(base_name, unique_name_map)
+
+    return display_name_map
+
+
+# Collect CSV animation names that actually matched the current image set.
+def get_animation_order_from_imported_order(images, imported_order):
+    matched_keys = set()
+
+    for img_path in images:
+        base_name, _ = split_animation_name(img_path)
+        base_name = normalize_animation_csv_name(base_name)
+        matched_animation = find_matching_import_animation(base_name, imported_order)
+
+        if matched_animation:
+            matched_keys.add(matched_animation.lower())
+
+    return [animation_name for animation_name in imported_order if animation_name.lower() in matched_keys]
+
+
 # Write animation section names followed by their final atlas frame indexes.
-def write_animation_index_txt(txt_path, images):
+def write_animation_index_txt(txt_path, images, imported_order=None):
+    display_name_map = build_animation_display_name_map(images, imported_order)
+
     with open(txt_path, "w", encoding="utf-8") as file:
         current_animation = None
 
         for index, img_path in enumerate(images):
             base_name, _ = split_animation_name(img_path)
+            base_name = normalize_animation_csv_name(base_name)
+            display_name = display_name_map.get(base_name.lower(), base_name)
 
-            if base_name != current_animation:
+            if display_name != current_animation:
                 if current_animation is not None:
                     file.write("\n")
 
-                file.write(f"{base_name}\n")
-                current_animation = base_name
+                file.write(f"{display_name}\n")
+                current_animation = display_name
 
             file.write(f"{index}\n")
+
+
+# Return True when a CSV animation name matches tokens in a source filename.
+def animation_tokens_match_filename(csv_animation_name, filename_base_name):
+    csv_tokens = [token.lower() for token in split_animation_tokens(csv_animation_name)]
+    filename_tokens = {token.lower() for token in split_animation_tokens(filename_base_name)}
+
+    if not csv_tokens:
+        return False
+
+    return all(token in filename_tokens for token in csv_tokens)
+
+
+# Find the imported CSV animation name that best matches a source filename.
+def find_matching_import_animation(base_name, imported_order):
+    matches = []
+
+    for order_index, animation_name in enumerate(imported_order):
+        if animation_tokens_match_filename(animation_name, base_name):
+            token_count = len(split_animation_tokens(animation_name))
+            matches.append((token_count, -order_index, animation_name))
+
+    if not matches:
+        return None
+
+    matches.sort(reverse=True)
+    return matches[0][2]
 
 
 # Reorder image groups to follow an imported animation order CSV.
 def order_images_by_animation_csv(images, imported_order):
     groups = {}
-    display_names = {}
-    animation_names = []
-    seen_names = set()
+    leftovers = []
 
     for img_path in images:
-        base_name, _ = split_animation_name(img_path)
-        key = base_name.lower()
-        groups.setdefault(key, []).append(img_path)
-        display_names[key] = base_name
+        base_name, frame_number = split_animation_name(img_path)
+        base_name = normalize_animation_csv_name(base_name)
+        matched_animation = find_matching_import_animation(base_name, imported_order)
 
-        if key not in seen_names:
-            seen_names.add(key)
-            animation_names.append(base_name)
+        if matched_animation is None:
+            leftovers.append((base_name, frame_number, img_path))
+            print(f"CSV animation not matched for file: {img_path.name}")
+            continue
 
-    detected_prefix = detect_animation_prefix(animation_names)
-    stripped_key_lookup = {}
-
-    for key, base_name in display_names.items():
-        stripped_name = strip_animation_prefix(base_name, detected_prefix)
-        stripped_key_lookup.setdefault(stripped_name.lower(), key)
-        stripped_key_lookup.setdefault(normalize_animation_csv_name(stripped_name).lower(), key)
-        stripped_key_lookup.setdefault(normalize_animation_csv_name(base_name).lower(), key)
-
-        # Also support suffix matching so CSV entries like
-        # 'RAttack' match 'Saber_1H_RAttack' or 'Wood_1H_RAttack'.
-        parts = re.split(r"[_\- ]+", normalize_animation_csv_name(base_name))
-        for i in range(len(parts)):
-            suffix = "_".join(parts[i:]).strip().lower()
-            if suffix:
-                stripped_key_lookup.setdefault(suffix, key)
+        key = matched_animation.lower()
+        groups.setdefault(key, []).append((frame_number, img_path))
 
     ordered_images = []
     used_keys = set()
 
     for animation_name in imported_order:
-        imported_key = animation_name.lower()
-        normalized_imported_key = normalize_animation_csv_name(animation_name).lower()
-
-        # Support both new prefix-free CSVs and older full-name CSVs.
-        key = imported_key
+        key = animation_name.lower()
 
         if key not in groups:
-            key = stripped_key_lookup.get(imported_key)
-
-        if key not in groups:
-            key = stripped_key_lookup.get(normalized_imported_key)
-
-        if not key or key not in groups:
             print(f"CSV animation not matched: {animation_name}")
             continue
 
-        ordered_images.extend(sorted(groups[key], key=frame_sort_key))
+        frames = sorted(
+            groups[key],
+            key=lambda item: (
+                -1 if item[0] is None else item[0],
+                item[1].name.lower()
+            )
+        )
+
+        ordered_images.extend([img_path for _, img_path in frames])
         used_keys.add(key)
 
     leftover_keys = sorted(
@@ -230,7 +341,24 @@ def order_images_by_animation_csv(images, imported_order):
     )
 
     for key in leftover_keys:
-        ordered_images.extend(sorted(groups[key], key=frame_sort_key))
+        frames = sorted(
+            groups[key],
+            key=lambda item: (
+                -1 if item[0] is None else item[0],
+                item[1].name.lower()
+            )
+        )
+        ordered_images.extend([img_path for _, img_path in frames])
+
+    leftovers = sorted(
+        leftovers,
+        key=lambda item: (
+            item[0].lower(),
+            -1 if item[1] is None else item[1],
+            item[2].name.lower()
+        )
+    )
+    ordered_images.extend([img_path for _, _, img_path in leftovers])
 
     return ordered_images
 
@@ -897,10 +1025,12 @@ class ViSheetMaker:
                 if p.is_file() and p.suffix.lower() in VALID_EXTS
             ]
 
-            # Apply filename-based sorting before optional CSV ordering.
-            images = sorted(images, key=frame_sort_key)
+            # Default atlas placement order is plain alphabetical.
+            # Exporting CSV/index files must NEVER change atlas placement order.
+            # Only CSV import is allowed to reorder the actual atlas.
+            images = sorted(images, key=lambda path: path.name.lower())
 
-            # Reorder images by imported animation order when provided.
+            # Reorder atlas placement by imported animation order only when provided.
             if imported_order is not None:
                 images = order_images_by_animation_csv(images, imported_order)
 
@@ -917,13 +1047,17 @@ class ViSheetMaker:
 
             # Export the unique animation order and frame index map used by this atlas.
             if self.export_animation_order_csv.get():
-                animation_order = get_animation_order_from_images(images, strip_shared_prefix=True)
+                if imported_order is not None:
+                    animation_order = get_animation_order_from_imported_order(images, imported_order)
+                else:
+                    animation_order = get_animation_order_from_images(images, strip_shared_prefix=True)
+
                 csv_output_path = self.output_folder / f"{output_name}_animation_order.csv"
                 txt_output_path = self.output_folder / f"{output_name}_animation_indexes.txt"
 
                 try:
                     write_animation_order_csv(csv_output_path, animation_order)
-                    write_animation_index_txt(txt_output_path, images)
+                    write_animation_index_txt(txt_output_path, images, imported_order)
                 except Exception:
                     messagebox.showerror(
                         "Error",
